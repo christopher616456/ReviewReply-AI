@@ -288,11 +288,57 @@ async function getOrCreateProfile(uid: string, email: string, businessName?: str
 
 // ─── Helper: Authenticate request and get profile ─────────────────────────
 async function getUserFromRequest(req: express.Request): Promise<any> {
-  const decoded = await verifyFirebaseToken(req.headers.authorization);
+  const authHeader = req.headers.authorization;
+  let customKeyCandidate = req.headers['x-api-key'] as string;
+
+  if (!customKeyCandidate && authHeader && authHeader.startsWith('Bearer ')) {
+    const bearerToken = authHeader.replace('Bearer ', '').trim();
+    if (bearerToken.startsWith('rr_live_')) {
+      customKeyCandidate = bearerToken;
+    }
+  }
+
+  if (customKeyCandidate) {
+    const activeKey = customKeyCandidate.trim();
+    if (sql) {
+      const users = await sql`
+        SELECT * FROM users_profile WHERE custom_api_key = ${activeKey} LIMIT 1
+      `;
+      if (users.length > 0) {
+        const u = users[0];
+        if (u.plan === 'free') {
+          throw new Error('Review Reply AI API Key usage is locked. Please upgrade to a paid plan to activate developer access.');
+        }
+        return u;
+      }
+    } else {
+      const matched = Object.values(mockProfiles).find(p => p.custom_api_key === activeKey);
+      if (matched) {
+        if (matched.plan === 'free') {
+          throw new Error('Review Reply AI API Key usage is locked. Please upgrade to a paid plan to activate developer access.');
+        }
+        return matched;
+      }
+    }
+    return null;
+  }
+
+  const decoded = await verifyFirebaseToken(authHeader);
   if (!decoded) return null;
 
   const profile = await getOrCreateProfile(decoded.uid, decoded.email || '');
   return { ...profile, email: decoded.email || profile.email };
+}
+
+function getGeminiClient(req: express.Request, user: any): GoogleGenAI | null {
+  // Always run on our own premium system Gemini key (fully server-side, no user Gemini key needed)
+  if (process.env.GEMINI_API_KEY) {
+    return new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY,
+      httpOptions: { headers: { 'User-Agent': 'review-reply-ai' } }
+    });
+  }
+  return ai;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -316,6 +362,24 @@ app.get('/api/usage', async (req, res) => {
     const user = await getUserFromRequest(req);
     if (!user) return res.status(401).json({ error: 'Unauthorized or verification token missing.' });
 
+    const isPaid = user.plan && user.plan !== 'free';
+    let apiKey = user.custom_api_key || '';
+
+    if (isPaid && !apiKey) {
+      apiKey = `rr_live_${crypto.randomBytes(16).toString('hex')}`;
+      if (sql) {
+        await sql`
+          UPDATE users_profile
+          SET custom_api_key = ${apiKey}
+          WHERE id = ${user.id}
+        `;
+      } else {
+        const profile = getMockProfile(user.id, user.email);
+        profile.custom_api_key = apiKey;
+      }
+      user.custom_api_key = apiKey;
+    }
+
     res.json({
       id: user.id,
       email: user.email,
@@ -324,6 +388,7 @@ app.get('/api/usage', async (req, res) => {
       plan: user.plan,
       replies_used: user.replies_used,
       replies_limit: user.replies_limit,
+      custom_api_key: isPaid ? apiKey : '',
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -370,9 +435,10 @@ Rules:
     let replyText = '';
 
     // Use gemini-3.5-flash as the primary text engine as per instructions
-    if (hasGemini && ai) {
+    const activeAi = getGeminiClient(req, user);
+    if (activeAi) {
       try {
-        const response = await ai.models.generateContent({
+        const response = await activeAi.models.generateContent({
           model: 'gemini-3.5-flash',
           contents: `Please write a reply to this customer review:\n\n"${reviewText}"`,
           config: { systemInstruction: systemPrompt }
@@ -446,8 +512,9 @@ app.post('/api/transcribe', async (req, res) => {
     if (!audio) return res.status(400).json({ error: 'Audio data is required' });
 
     // Fallback if Gemini is not ready/initialized
-    if (!hasGemini || !ai) {
-      console.warn('Gemini is not initialized. Using standard pattern match transcription fallback.');
+    const activeAi = getGeminiClient(req, user);
+    if (!activeAi) {
+      console.warn('Gemini is not initialized.');
       return res.status(503).json({ error: 'Gemini service is not available for transcription. Please try typing your review.' });
     }
 
@@ -462,7 +529,7 @@ app.post('/api/transcribe', async (req, res) => {
       text: 'Transcribe this voice dictation perfectly. Return ONLY the exact transcribed speech, with punctuation added, in the language it is spoken. Do not add any greeting, disclaimer, conversational framing, notes, or analysis. Just return the pure transcribed text.',
     };
 
-    const response = await ai.models.generateContent({
+    const response = await activeAi.models.generateContent({
       model: 'gemini-3.5-flash',
       contents: { parts: [audioPart, textPart] },
     });
@@ -607,18 +674,52 @@ app.post('/api/profile', async (req, res) => {
       const profile = getMockProfile(user.id, user.email);
       profile.business_name = req.body.businessName;
       profile.business_type = req.body.businessType;
-      return res.json({ success: true, businessName: profile.business_name, businessType: profile.business_type });
+      return res.json({
+        success: true,
+        businessName: profile.business_name,
+        businessType: profile.business_type,
+        customApiKey: profile.custom_api_key || ''
+      });
     }
 
     const { businessName, businessType } = req.body;
 
     await sql`
       UPDATE users_profile
-      SET business_name = ${businessName}, business_type = ${businessType}
+      SET business_name = ${businessName},
+          business_type = ${businessType}
       WHERE id = ${user.id}
     `;
 
-    res.json({ success: true, businessName, businessType });
+    res.json({ success: true, businessName, businessType, customApiKey: user.custom_api_key || '' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/profile/regenerate-key — regenerate Review Reply AI API Key for paid plans
+app.post('/api/profile/regenerate-key', async (req, res) => {
+  try {
+    const user = await getUserFromRequest(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized Token' });
+
+    if (user.plan === 'free') {
+      return res.status(403).json({ error: 'API Keys are restricted to paid tiers only. Please upgrade your plan.' });
+    }
+
+    const newApiKey = `rr_live_${crypto.randomBytes(16).toString('hex')}`;
+    if (sql) {
+      await sql`
+        UPDATE users_profile
+        SET custom_api_key = ${newApiKey}
+        WHERE id = ${user.id}
+      `;
+    } else {
+      const profile = getMockProfile(user.id, user.email);
+      profile.custom_api_key = newApiKey;
+    }
+
+    res.json({ success: true, customApiKey: newApiKey });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -832,6 +933,9 @@ async function initDatabase() {
     `;
     await sql`
       ALTER TABLE review_history ADD COLUMN IF NOT EXISTS feedback VARCHAR(50) DEFAULT NULL;
+    `;
+    await sql`
+      ALTER TABLE users_profile ADD COLUMN IF NOT EXISTS custom_api_key VARCHAR(255) DEFAULT NULL;
     `;
     console.log('Neon database tables verified/created successfully.');
   } catch (err: any) {

@@ -61,6 +61,7 @@ export default function App() {
           plan: data.plan,
           replies_used: data.replies_used,
           replies_limit: data.replies_limit,
+          custom_api_key: data.custom_api_key,
         });
       } else {
         console.warn('Could not retrieve database user status.');
@@ -183,6 +184,22 @@ export default function App() {
   }
 
   // Serving signed-in business operators
+  const isEmbed = window.location.search.includes('embed=true') || window.location.hash.includes('embed=true');
+
+  if (isEmbed) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col p-4 overflow-y-auto">
+        <Toaster position="top-right" reverseOrder={false} />
+        <ReplyTool
+          userProfile={userProfile}
+          getAuthToken={getAuthToken}
+          onRefreshProfile={refreshProfileData}
+          onNavigate={handleNavigate}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 flex overflow-hidden">
       <Toaster position="top-right" reverseOrder={false} />

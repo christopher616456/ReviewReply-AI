@@ -13,6 +13,7 @@ export interface UserProfile {
   replies_limit: number;
   razorpay_customer_id?: string;
   razorpay_subscription_id?: string;
+  custom_api_key?: string;
   created_at?: string;
 }
 

@@ -4,7 +4,7 @@ import { toast } from 'react-hot-toast';
 import { 
   Search, Calendar, Copy, Check, Trash2, Smile, MessagesSquare, 
   ChevronDown, ChevronUp, Clock, Filter, Sparkles, Languages,
-  ThumbsUp, ThumbsDown
+  ThumbsUp, ThumbsDown, Download, Share2, Twitter, Linkedin, Facebook, Mail, Link
 } from 'lucide-react';
 
 interface HistoryListProps {
@@ -18,6 +18,7 @@ export default function HistoryList({ getAuthToken }: HistoryListProps) {
   const [loading, setLoading] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [activeShareId, setActiveShareId] = useState<string | null>(null);
 
   const fetchHistory = async () => {
     setLoading(true);
@@ -44,6 +45,17 @@ export default function HistoryList({ getAuthToken }: HistoryListProps) {
 
   useEffect(() => {
     fetchHistory();
+  }, []);
+
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('.share-container-btn') && !target.closest('.share-dropdown-menu')) {
+        setActiveShareId(null);
+      }
+    };
+    document.addEventListener('click', handleOutsideClick);
+    return () => document.removeEventListener('click', handleOutsideClick);
   }, []);
 
   const handleCopy = (id: string, text: string) => {
@@ -126,6 +138,57 @@ export default function HistoryList({ getAuthToken }: HistoryListProps) {
     }
   };
 
+  const handleDownloadCSV = () => {
+    if (filteredHistory.length === 0) {
+      toast.error('No history records to download.');
+      return;
+    }
+
+    try {
+      // CSV escaping: double quotes need to be doubled, values with comma/quotes/newlines wrapped in double quotes
+      const escapeCSV = (val: string) => {
+        if (val === null || val === undefined) return '';
+        let str = String(val);
+        str = str.replace(/"/g, '""');
+        if (str.includes(',') || str.includes('\n') || str.includes('\r') || str.includes('"')) {
+          str = `"${str}"`;
+        }
+        return str;
+      };
+
+      const headers = ['ID', 'Tone', 'Language', 'Customer Review', 'AI Reply', 'Feedback Rating', 'Created At'];
+      const rows = filteredHistory.map(item => [
+        item.id,
+        item.tone,
+        item.language || 'English',
+        item.review_text,
+        item.reply_text,
+        item.feedback || 'None',
+        item.created_at || ''
+      ]);
+
+      const csvContent = [
+        headers.join(','),
+        ...rows.map(row => row.map(escapeCSV).join(','))
+      ].join('\r\n');
+
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `reply_history_${new Date().toISOString().slice(0, 10)}.csv`);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      toast.success('Reply history exported to CSV successfully! 📊');
+    } catch (err: any) {
+      console.error('CSV Export Error:', err);
+      toast.error('Could not generate CSV file.');
+    }
+  };
+
   // Search & Filter computation
   const filteredHistory = history.filter(item => {
     const textMatch = 
@@ -156,7 +219,7 @@ export default function HistoryList({ getAuthToken }: HistoryListProps) {
         </div>
 
         {/* Tone Filters */}
-        <div className="flex items-center gap-3 w-full md:w-auto shrink-0 justify-end">
+        <div className="flex flex-wrap items-center gap-3 w-full md:w-auto shrink-0 justify-end">
           <div className="flex items-center gap-1.5 text-xs text-slate-500 font-semibold">
             <Filter className="w-3.5 h-3.5 text-slate-400" />
             <span>Tone Filter:</span>
@@ -172,6 +235,20 @@ export default function HistoryList({ getAuthToken }: HistoryListProps) {
             <option value="apologetic">Apologetic</option>
             <option value="thankful">Thankful</option>
           </select>
+
+          <button
+            onClick={handleDownloadCSV}
+            disabled={filteredHistory.length === 0}
+            className={`flex items-center gap-1.5 border text-xs font-bold px-3.5 py-2 rounded-xl transition-all cursor-pointer shadow-sm select-none ${
+              filteredHistory.length > 0
+                ? 'bg-blue-600 border-blue-600 text-white hover:bg-blue-700 active:scale-95 shadow-blue-500/10'
+                : 'bg-slate-50 border-slate-100 text-slate-400 cursor-not-allowed opacity-60'
+            }`}
+            title={filteredHistory.length > 0 ? "Download currently active history as CSV" : "No history records to export"}
+          >
+            <Download className="w-3.5 h-3.5 shrink-0" />
+            <span>Export CSV</span>
+          </button>
         </div>
 
       </div>
@@ -243,6 +320,102 @@ export default function HistoryList({ getAuthToken }: HistoryListProps) {
                     >
                       <ThumbsDown className="w-3.5 h-3.5" />
                     </button>
+
+                    <div className="relative">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveShareId(activeShareId === item.id ? null : item.id);
+                        }}
+                        className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors cursor-pointer share-container-btn ${
+                          activeShareId === item.id 
+                            ? 'bg-blue-600 text-white shadow-sm shadow-blue-500/20' 
+                            : 'bg-slate-50 hover:bg-slate-100 hover:text-slate-800 text-slate-500'
+                        }`}
+                        title="Share reply on social media"
+                      >
+                        <Share2 className="w-3.5 h-3.5" />
+                      </button>
+
+                      {activeShareId === item.id && (
+                        <div className="absolute right-0 mt-1.5 w-48 bg-white border border-slate-100 rounded-xl shadow-lg shadow-slate-200/80 p-1.5 z-50 text-left share-dropdown-menu">
+                          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest px-2.5 py-1 mb-1">
+                            Share Article
+                          </p>
+                          
+                          <a
+                            href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(`Check out this AI-generated customer review reply! ✨\n\n"${item.reply_text.slice(0, 150)}${item.reply_text.length > 150 ? '...' : ''}"`)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors cursor-pointer"
+                          >
+                            <Twitter className="w-3.5 h-3.5 text-sky-500 fill-sky-500/15" />
+                            <span>Share on X / Twitter</span>
+                          </a>
+
+                          <a
+                            href={`https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent('https://ai.studio/build')}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors cursor-pointer"
+                          >
+                            <Linkedin className="w-3.5 h-3.5 text-blue-600 fill-blue-600/15" />
+                            <span>Share on LinkedIn</span>
+                          </a>
+
+                          <a
+                            href={`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent('https://ai.studio/build')}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors cursor-pointer"
+                          >
+                            <Facebook className="w-3.5 h-3.5 text-blue-800 fill-blue-800/15" />
+                            <span>Share on Facebook</span>
+                          </a>
+
+                          <a
+                            href={`mailto:?subject=${encodeURIComponent("AI Customer Review Reply Drafted")}&body=${encodeURIComponent(`Hi,\n\nI want to share this AI-generated response draft for customer review reviews.\n\nCustomer Review:\n"${item.review_text}"\n\nGenerated AI Reply:\n"${item.reply_text}"`)}`}
+                            className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors cursor-pointer"
+                          >
+                            <Mail className="w-3.5 h-3.5 text-slate-500" />
+                            <span>Share via Email</span>
+                          </a>
+
+                          <button
+                            onClick={() => {
+                              handleCopy(item.id, `Review: "${item.review_text}"\nReply: "${item.reply_text}"`);
+                              setActiveShareId(null);
+                            }}
+                            className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors cursor-pointer text-left"
+                          >
+                            <Link className="w-3.5 h-3.5 text-emerald-500" />
+                            <span>Copy Shareable Text</span>
+                          </button>
+
+                          {typeof navigator !== 'undefined' && navigator.share && (
+                            <button
+                              onClick={async () => {
+                                try {
+                                  await navigator.share({
+                                    title: 'AI Drafted Customer Review Reply',
+                                    text: `Review: "${item.review_text}"\nAI Response: "${item.reply_text}"`,
+                                    url: window.location.origin
+                                  });
+                                  toast.success('Shared successfully!');
+                                } catch (err) {
+                                  console.log('User cancelled or native share failed', err);
+                                }
+                                setActiveShareId(null);
+                              }}
+                              className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg text-xs font-bold text-blue-600 hover:text-blue-800 hover:bg-blue-50 transition-colors cursor-pointer text-left border-t border-slate-50 mt-1 pt-1.5"
+                            >
+                              <Share2 className="w-3.5 h-3.5" />
+                              <span>System Native Share</span>
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
 
                     <button
                       onClick={() => handleCopy(item.id, item.reply_text)}

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { motion } from 'motion/react';
 import { UserProfile, ToneType, LanguageType } from '../types';
 import { toast } from 'react-hot-toast';
 import { 
@@ -575,8 +576,41 @@ export default function ReplyTool({ userProfile, getAuthToken, onRefreshProfile,
                   <div className="bg-blue-50/50 rounded-xl p-5 border border-blue-100 text-slate-700 text-sm leading-relaxed relative min-h-[160px] flex flex-col justify-between">
                     <div>
                       <Quote className="w-8 h-8 text-blue-200/40 absolute top-3 left-3 shrink-0 select-none pointer-events-none" />
-                      <div className="relative z-10 pl-3">
-                        {generatedReply}
+                      <div className="relative z-10 pl-3 whitespace-pre-wrap">
+                        <motion.div
+                          key={generatedReply}
+                          initial="hidden"
+                          animate="visible"
+                          variants={{
+                            hidden: { opacity: 0 },
+                            visible: {
+                              opacity: 1,
+                              transition: {
+                                staggerChildren: 0.012,
+                              },
+                            },
+                          }}
+                          className="inline"
+                        >
+                          {generatedReply.split(/(\s+)/).map((part, index) => {
+                            if (part.trim() === '') {
+                              return <span key={index}>{part}</span>;
+                            }
+                            return (
+                              <motion.span
+                                key={index}
+                                variants={{
+                                  hidden: { opacity: 0, y: 3 },
+                                  visible: { opacity: 1, y: 0 },
+                                }}
+                                transition={{ duration: 0.12, ease: "easeOut" }}
+                                style={{ display: 'inline-block' }}
+                              >
+                                {part}
+                              </motion.span>
+                            );
+                          })}
+                        </motion.div>
                       </div>
                     </div>
 
