@@ -1,0 +1,103 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Safety Net: Default-deny catch-all to prevent unmapped collection writes
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ─── Reusable Helper Primitives ──────────────────────────────────────────
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validate a UserProfile document on write
+    function isValidUserProfile(data) {
+      return data.id is string 
+        && data.id.size() <= 128
+        && data.email is string 
+        && data.email.size() <= 256
+        && (data.get('business_name', '') is string && data.get('business_name', '').size() <= 256)
+        && (data.get('business_type', '') is string && data.get('business_type', '').size() <= 256)
+        && (data.get('plan', 'free') is string && data.get('plan', 'free').size() <= 50)
+        && (data.get('replies_used', 0) is int)
+        && (data.get('replies_limit', 5) is int)
+        && (data.get('razorpay_subscription_id', null) == null || data.get('razorpay_subscription_id', '') is string)
+        && (data.get('created_at', request.time) is timestamp);
+    }
+
+    // Validate a ReviewHistory document on write
+    function isValidReviewHistory(data, userId) {
+      return data.user_id == userId
+        && data.review_text is string 
+        && data.review_text.size() <= 10000
+        && data.reply_text is string 
+        && data.reply_text.size() <= 10000
+        && (data.get('tone', '') is string && data.get('tone', '').size() <= 100)
+        && (data.get('language', '') is string && data.get('language', '').size() <= 100)
+        && (data.get('created_at', request.time) is timestamp);
+    }
+
+    // ─── Collection Matches ──────────────────────────────────────────────────
+
+    // User Business Profiles
+    match /users_profile/{userId} {
+      allow get: if isOwner(userId);
+      // Deny blanket user list searches to protect PII
+      allow list: if false;
+
+      allow create: if isOwner(userId) 
+        && isValidId(userId)
+        && isValidUserProfile(incoming())
+        && incoming().id == userId
+        && incoming().plan == 'free' // Force free tier upon creation to prevent plan spoofing
+        && incoming().created_at == request.time;
+
+      allow update: if isOwner(userId)
+        && isValidUserProfile(incoming())
+        && incoming().id == existing().id
+        && incoming().email == existing().email // Email is immortal
+        && incoming().created_at == existing().created_at // Immutability
+        && (
+          // Action: Update business card configurations
+          incoming().diff(existing()).affectedKeys().hasOnly(['business_name', 'business_type'])
+          // Action: Increment usage counts or change subscription statuses
+          || incoming().diff(existing()).affectedKeys().hasOnly(['replies_used', 'plan', 'replies_limit', 'razorpay_subscription_id'])
+        );
+
+      allow delete: if isOwner(userId);
+
+      // Associated user replies history list
+      match /history/{reviewId} {
+        allow get: if isOwner(userId);
+        allow list: if isOwner(userId); // Query enforcer checked against resource context
+
+        allow create: if isOwner(userId)
+          && isValidId(reviewId)
+          && isValidReviewHistory(incoming(), userId)
+          && incoming().created_at == request.time;
+
+        allow update: if false; // History records are read-only (immutable after creation)
+        allow delete: if isOwner(userId);
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "ReviewReply AI",
+  "description": "Generate warm, professional AI responses to customer reviews instantly using Gemini 3.5 Flash.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
